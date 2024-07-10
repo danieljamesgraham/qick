@@ -73,3 +73,5 @@ Temporary Items
 !/README.md
 
 .qick_venv/
+.vscode/
+qick_demos/
