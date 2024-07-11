@@ -1,23 +1,31 @@
 # TODO: Extract parsing function and inherit it instead.
 
 from qick import QickConfig
+from qick import QickProgram
 
 class PickleParse():
     sequence = []
 
-    def __init__(self, pulse_sequences):
-        # self.soccfg = soccfg
-        self.pulse_sequences = pulse_sequences
+    def __init__(self, imported_seqs, ch_map=None):
         self.ch_cfg = {}
+
+        if ch_map != None:
+            self.pulse_seqs = {}
+            for key, value in ch_map.items():
+                self.pulse_seqs[key] = imported_seqs[value]
+        else:
+            self.pulse_seqs = imported_seqs
+
 
         valid_channels = ["DAC_A", "DAC_B", "PMOD_0", "PMOD_1", "PMOD_2", "PMOD_3"]
 
-        for channel, seq_params in self.pulse_sequences.items():
+        for channel, seq_params in self.pulse_seqs.items():
 
             # Check validity of arguments and extract channel info -------------
 
             if channel not in valid_channels:
-                raise Exception(channel, "is not a valid output")
+                raise Exception(channel, "Not a valid channel. Try any from:", 
+                                valid_channels)
         
             ch_type = channel.split('_')[0]
             ch_index = channel.split('_')[1]
@@ -108,14 +116,53 @@ class PickleParse():
 
 # ------------------------------------------------------------------------------
 
-    def configure(self, soccfg):
-        self.soccfg = soccfg
+    def dac_defaults(self, prog, gain, freq, phase):
+        # TODO: Make generic
+        prog.declare_gen(ch=1, nqz=1) # Initialise DAC
+        phase = prog.deg2reg(0, gen_ch=1) # TODO: Set here and override later?
+        gain = 10000 # TODO: Set here and override later?
+        prog.default_pulse_registers(ch=1, phase=phase, gain=gain) # Set default pulse parameters
+
+    def generate_asm(self, prog, reps=1):
+        ch_cfg = self.ch_cfg
+        soccfg = prog.soccfg
+        pmod = soccfg['tprocs'][0]['output_pins'][0][1]
+
+        # TODO: move outside
+        offset = 38
+
+        prog.synci(200)  # Give processor some time to configure pulses
+
+        prog.regwi(0, 14, reps - 1) # 10 reps, stored in page 0, register 14
+        prog.label("LOOP_I") # Start of internal loop
+
+        # Configure DAC pulses
+        # TODO: tidy by taking objects out of functions
+
+        for channel in ch_cfg:
+            ch_ref = ch_cfg[channel]["ch_ref"]
+            num_pulses = ch_cfg[channel]["num_pulses"]
+
+            if ch_cfg[channel]["ch_type"] == "DAC":
+                for i in range(num_pulses):
+                    # TODO: Set phase and gain parameters
+                    # phase = self.deg2reg(self.cfg["res_phase"], gen_ch=GEN_CH_A)
+                    # gain = self.cfg["pulse_gain"]
+
+                    # Pulse parameters
+                    freq = prog.freq2reg(ch_cfg["DAC_A"]["freqs"][i], gen_ch=ch_ref)
+                    time = prog.us2cycles(ch_cfg["DAC_A"]["times"][i]) - offset
+                    pulse_len = prog.us2cycles(ch_cfg["DAC_A"]["pulse_lens"][i], gen_ch=ch_ref)
+
+                    # Store pulse parameters in register, then trigger pulse at given time
+                    prog.set_pulse_registers(ch=ch_ref, freq=freq, style="const", length=pulse_len)
+                    prog.pulse(ch=ch_ref, t=time)
         
         out = 0
-        for l in DigitalOutput.sequence: 
-            time = int(QickConfig.us2cycles((l[0]) / 1e3))
+        for l in PickleParse.sequence: 
+            time = int(prog.us2cycles((l[0]) / 1e3))
             state = l[1]
-            bit_position = l[2]
+            bit_position = int(l[2])
 
             if state == 1:
                 out |= (1 << bit_position)
@@ -125,65 +172,10 @@ class PickleParse():
             rp = 0 # tproc register page
             r_out = 31 # tproc register
             # print(bin(out), time)
-            self.regwi(rp, r_out, out)
-            self.seti(soccfg['tprocs'][0]['output_pins'][0][1], rp, r_out, time)
+            prog.regwi(rp, r_out, out)
+            prog.seti(pmod, rp, r_out, time)
 
-
-
-
-class DigitalOutput():
-    sequence = []
-
-    def __init__(self, soccfg, pmod_ch, seq):
-        self.soccfg = soccfg
-        self.pmod_ch = pmod_ch
-        self.seq = seq
-
-        # Remove pre-exisiting sequence if it already exists for channel
-        for l in self.sequence[:]:
-            if l[-1] == self.pmod_ch:
-                self.sequence.remove(l)
-        
-        if self.seq != None:
-            # Convert list of tuples into list of lists
-            self.seq = [list(t) for t in self.seq]
-
-            # Convert pulse widths into elapsed time and append channel to list
-            time = 0
-            for l in self.seq:
-                l[0], time = time, time + l[0]
-                l.append(pmod_ch)
-
-            delete_indices = []
-            for i in range(len(self.seq) - 1):
-                if self.seq[i][1] == self.seq[i+1][1]:
-                    delete_indices.append(i+1)
-            for i in reversed(delete_indices):
-                del self.seq[i]
-            
-            # End final pulse
-            self.seq.append([time, 0, pmod_ch])
-
-            # Add channel sequence to master sequence and sort in order of time
-            [self.sequence.append(l) for l in self.seq]
-            self.sequence.sort(key=lambda x: x[0])
-        
-    def configure(self, soccfg):
-        self.soccfg = soccfg
-        
-        out = 0
-        for l in DigitalOutput.sequence: 
-            time = int(self.us2cycles((l[0]) / 1e3))
-            state = l[1]
-            bit_position = l[2]
-
-            if state == 1:
-                out |= (1 << bit_position)
-            elif state == 0:
-                out &= ~(1 << bit_position)
-
-            rp = 0 # tproc register page
-            r_out = 31 # tproc register
-            # print(bin(out), time)
-            self.regwi(rp, r_out, out)
-            self.seti(soccfg['tprocs'][0]['output_pins'][0][1], rp, r_out, time)
+        prog.wait_all()
+        prog.synci(prog.us2cycles(ch_cfg["DAC_A"]["finish"]))
+        prog.loopnz(0, 14, "LOOP_I")
+        prog.end()
