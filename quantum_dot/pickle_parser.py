@@ -3,12 +3,16 @@
 from qick import QickConfig
 from qick import QickProgram
 
+valid_channels = ["DAC_A", "DAC_B", "PMOD_0", "PMOD_1", "PMOD_2", "PMOD_3"]
+
 class PickleParse():
-    sequence = []
+
+    sequence = [] # TODO: Remove
 
     def __init__(self, imported_seqs, ch_map=None):
         self.ch_cfg = {}
 
+        # Allow sequences to be mapped to different channels
         if ch_map != None:
             self.pulse_seqs = {}
             for key, value in ch_map.items():
@@ -16,24 +20,19 @@ class PickleParse():
         else:
             self.pulse_seqs = imported_seqs
 
-
-        valid_channels = ["DAC_A", "DAC_B", "PMOD_0", "PMOD_1", "PMOD_2", "PMOD_3"]
-
+        # Check channel is valid
         for channel, seq_params in self.pulse_seqs.items():
-
-            # Check validity of arguments and extract channel info -------------
-
             if channel not in valid_channels:
                 raise Exception(channel, "Not a valid channel. Try any from:", 
                                 valid_channels)
         
+            # Extract channel information
             ch_type = channel.split('_')[0]
             ch_index = channel.split('_')[1]
             
             # PMOD parsing -----------------------------------------------------
-
             if ch_type == "PMOD":
-                print("----- PMOD ------")
+                print(f"----- PMOD {ch_index} ------")
 
                 # Convert list of tuples into list of lists
                 seq_params = [list(t) for t in seq_params]
@@ -63,58 +62,52 @@ class PickleParse():
             # DAC parsing ------------------------------------------------------
 
             if ch_type == "DAC":
-                print("----- DAC -----")
+                print(f"----- DAC {ch_index} -----")
+                time = 0
+                lengths, times, freqs = [], [], []
 
-                pulse_lens = []
-                on_times = []
-                on_freqs = []
-
+                # Assign correct QICK channel index
                 if ch_index == 'A':
                     ch_ref = 1
                 elif ch_index == 'B':
                     ch_ref = 0
 
+                # Create lists of pulse parameters
                 for l in seq_params:
                     if int(l[1]) == 1:
-                        pulse_lens.append(int(l[0])/1e3)
+                        times.append(time/1e3) # Trigger time [us]
+                        lengths.append(int(l[0])/1e3) # Pulse durations [us]
+                        freqs.append(l[2]*1e3) # DAC frequency [Hz]
+                    time += l[0]
+                finish = time/1e3 # End time of sequence [us]
 
-                running_time = 0
-                for l in seq_params:
-                    if int(l[1]) == 1:
-                        on_times.append(running_time/1e3)
-                        on_freqs.append(l[2]*1e3)
-                    running_time += l[0]
-                finish_time = running_time/1e3
-
-                if len(pulse_lens) != len(on_times):
-                    raise ValueError # TODO: Make error less generic
-                
-                seq_length = len(pulse_lens)
-                # TODO: Actually implement this
                 # TODO: Class-wide variable that stores sequence lengths
+                num_pulses = len(lengths)
+                if (len(times) != num_pulses or
+                    len(freqs) != num_pulses):
+                    raise Exception("Number of elements in pulse parameter \
+                                    lists are not equal")
 
-                # print(pulse_lens, on_times, on_freqs, finish_time)
-                self.ch_cfg[channel] = {"pulse_lens": pulse_lens,
-                                        "times": on_times,
-                                        "freqs": on_freqs,
-                                        "finish": finish_time,
-                                        "num_pulses": seq_length,
-                                        "ch_type": ch_type,
-                                        "ch_ref": ch_ref
-                                        }
-                
+                # Create and print dictionary containing pulse parameters
+                self.ch_cfg[channel] = {"ch_type": ch_type,
+                                        "ch_ref": ch_ref,
+                                        "num_pulses": num_pulses,
+                                        "times": times,
+                                        "lengths": lengths,
+                                        "freqs": freqs,
+                                        "finish": finish
+                                        } 
                 for key, value in self.ch_cfg[channel].items():
-                    print(key, value)
+                    print(f"{key}: {value}")
 
-        # Post-parsing information ---------------------------------------------
+            # ------------------------------------------------------------------
 
-        last_finish = 0 
+        # Find and print time at which last state in sequence ends
+        end = 0 
         for channel in self.ch_cfg:
-            if self.ch_cfg[channel]["finish"] > last_finish:
-                last_finish = self.ch_cfg[channel]["finish"]
-        print("Last finish:", last_finish)
-
-# ------------------------------------------------------------------------------
+            if self.ch_cfg[channel]["finish"] > end:
+                end = self.ch_cfg[channel]["finish"]
+        print(f"----- End time: {end} -----")
 
     def dac_defaults(self, prog, gain, freq, phase):
         # TODO: Make generic
@@ -152,10 +145,10 @@ class PickleParse():
                     # Pulse parameters
                     freq = prog.freq2reg(ch_cfg["DAC_A"]["freqs"][i], gen_ch=ch_ref)
                     time = prog.us2cycles(ch_cfg["DAC_A"]["times"][i]) - offset
-                    pulse_len = prog.us2cycles(ch_cfg["DAC_A"]["pulse_lens"][i], gen_ch=ch_ref)
+                    length = prog.us2cycles(ch_cfg["DAC_A"]["lengths"][i], gen_ch=ch_ref)
 
                     # Store pulse parameters in register, then trigger pulse at given time
-                    prog.set_pulse_registers(ch=ch_ref, freq=freq, style="const", length=pulse_len)
+                    prog.set_pulse_registers(ch=ch_ref, freq=freq, style="const", length=length)
                     prog.pulse(ch=ch_ref, t=time)
         
         out = 0
