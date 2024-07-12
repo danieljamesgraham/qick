@@ -1,13 +1,13 @@
 from qick import QickConfig
 from qick import QickProgram
 
-valid_channels = ["DAC_A", "DAC_B", "PMOD_0", "PMOD_1", "PMOD_2", "PMOD_3"]
+valid_channels = ["DAC_A", "DAC_B", "DIG_0", "DIG_1", "DIG_2", "DIG_3"]
 
 class PickleParse():
 
-    def __init__(self, imported_seqs, ch_map=None):
-        self.pmod_sequence = [] # TODO: Remove!
+    def __init__(self, imported_seqs, ch_map=None, delays={}):
         self.ch_cfg = {}
+        self.dig_seq = {}
 
         # Allow sequences to be mapped to different channels
         if ch_map != None:
@@ -17,39 +17,52 @@ class PickleParse():
         else:
             self.pulse_seqs = imported_seqs
 
-        # Check channel is valid
+        # Check channel delay arguments are valid
+        for channel, delay in delays.items():
+            if channel not in valid_channels:
+                raise Exception(f"{channel} is not a valid channel. Try any from:\n{valid_channels}")
+            if type(delay) != int:
+                raise Exception(f"{channel} delay ({delay}) must be an integer number of clock cycles")
+
         for channel, seq_params in self.pulse_seqs.items():
             lengths, times = [], []
-
+            
+            # Check channel names are valid
+            # TODO: Times, states, frequencies and phases must be floats or ints
             if channel not in valid_channels:
-                raise Exception(channel, "Not a valid channel. Try any from:", 
-                                valid_channels)
-        
+                raise Exception(f"{channel} is not a valid channel. Try any from:\n{valid_channels}")
+
             # Extract channel information
             ch_type = channel.split('_')[0]
             ch_ref = channel.split('_')[1]
             
-            if ch_type == "PMOD":
-                print(f"----- PMOD {ch_ref} ------")
+            if ch_type == "DIG":
+                print(f"----- DIG {ch_ref} ------")
                 ch_index = int(ch_ref)
 
             if ch_type == "DAC":
                 print(f"----- DAC {ch_ref} -----")
-                freqs = []
+                freqs, phases = [], []
                 # Assign correct QICK channel index
                 if ch_ref == 'A':
                     ch_index = 1
                 elif ch_ref == 'B':
                     ch_index = 0
 
+            if channel in delays: 
+                delay = delays[channel] # Trigger delay [proc. clock cycles]
+            else:
+                delay = 0
+
             # Create lists of pulse parameters
             time = 0
             for l in seq_params:
-                if int(l[1]) == 1:
+                if bool(l[1]) == True:
                     times.append(time/1e3) # Trigger time [us]
-                    lengths.append(int(l[0])/1e3) # Pulse durations [us]
+                    lengths.append(l[0]/1e3) # Pulse durations [us]
                     if ch_type == "DAC":
                         freqs.append(l[2]*1e3) # DAC frequency [Hz]
+                        phases.append(l[3]) # DAC phase [deg]
                 time += l[0]
             finish = time/1e3 # End time of sequence [us]
 
@@ -63,10 +76,13 @@ class PickleParse():
             self.ch_cfg[channel] = {"ch_type": ch_type,
                                     "ch_index": ch_index,
                                     "num_pulses": num_pulses,
+                                    "delay": delay,
                                     "times": times,
                                     "lengths": lengths,
                                     "finish": finish,
-                                    **({"freqs": freqs} if ch_type == "DAC" else {})
+                                    **({"freqs": freqs,
+                                        "phases": phases}
+                                       if ch_type == "DAC" else {})
                                     }
             for key, value in self.ch_cfg[channel].items():
                 print(f"{key}: {value}")
@@ -80,100 +96,99 @@ class PickleParse():
 
 
         # TODO: Raise error if end times don't match
-
+        # TODO: Make sure not all parameters have to be specified for DAC
+        # TODO: Make sure to raise error if too many parameters specified for DIG
 
 
 
     def dac_defaults(self, prog, gain, freq, phase):
         ch_cfg = self.ch_cfg
 
+        # TODO: Default gain, frequency and phase if not specified?
+        # Add gain for each pulse?
+        # Add logic to maintain values if not specified for a pulse?
+
         for channel in ch_cfg:
             if ch_cfg[channel]["ch_type"] == "DAC":
                 ch_index = ch_cfg[channel]["ch_index"]
-                phase = prog.deg2reg(0, gen_ch=ch_index) # TODO: Set here and override later?
-                gain = 10000 # TODO: Set here and override later?
+                gain = 10000
 
                 # Initialise DAC
                 prog.declare_gen(ch=ch_index, nqz=1) 
 
                 # Set default pulse parameters
-                prog.default_pulse_registers(ch=ch_index, phase=phase, gain=gain) 
+                prog.default_pulse_registers(ch=ch_index, gain=gain) 
 
     def generate_asm(self, prog, reps=1):
         ch_cfg = self.ch_cfg
         soccfg = prog.soccfg
-        pmod = soccfg['tprocs'][0]['output_pins'][0][1]
-
-        # TODO: move outside and make DAC parameter
-        offset = 38
-
-        # TODO: Remove!
-        self.pmod_sequence_1 = []
+        dig_id = soccfg['tprocs'][0]['output_pins'][0][1]
 
         prog.synci(200)  # Give processor some time to configure pulses
-
         prog.regwi(0, 14, reps - 1) # 10 reps, stored in page 0, register 14
         prog.label("LOOP_I") # Start of internal loop
 
         for channel in ch_cfg:
+            # Channel parameters
             ch_index = ch_cfg[channel]["ch_index"]
             num_pulses = ch_cfg[channel]["num_pulses"]
+            delay = ch_cfg[channel]["delay"]
 
             if ch_cfg[channel]["ch_type"] == "DAC":
                 for i in range(num_pulses):
-                    # TODO: Set phase and gain parameters
-                    # phase = self.deg2reg(self.cfg["res_phase"], gen_ch=GEN_CH_A)
-                    # gain = self.cfg["pulse_gain"]
-
-                    # Pulse parameters
-                    freq = prog.freq2reg(ch_cfg[channel]["freqs"][i], gen_ch=ch_index)
-                    time = prog.us2cycles(ch_cfg[channel]["times"][i]) - offset
+                    # DAC pulse parameters
+                    freq = prog.freq2reg(ch_cfg[channel]["freqs"][i], 
+                                         gen_ch=ch_index)
+                    phase = prog.deg2reg(ch_cfg[channel]["phases"][i],     
+                                         gen_ch=ch_index)
+                    time = prog.us2cycles(ch_cfg[channel]["times"][i]) + delay
                     length = prog.us2cycles(ch_cfg[channel]["lengths"][i], gen_ch=ch_index)
-                    print(time + offset)
 
-                    # Store pulse parameters in register, then trigger pulse at given time
-                    prog.set_pulse_registers(ch=ch_index, freq=freq, style="const", length=length)
+                    # Store DAC parameters in register and trigger pulse
+                    prog.set_pulse_registers(ch=ch_index, freq=freq, phase=phase, 
+                                             style="const", length=length)
                     prog.pulse(ch=ch_index, t=time)
 
-            if ch_cfg[channel]["ch_type"] == "PMOD":
-
-                ch_index = ch_cfg[channel]["ch_index"]
-                num_pulses = ch_cfg[channel]["num_pulses"]
-
-                seq_params_list = []
+            if ch_cfg[channel]["ch_type"] == "DIG":
                 for i in range(num_pulses):
-                    time = prog.us2cycles(ch_cfg[channel]["times"][i])
+                    # DIG pulse parameters
+                    time = prog.us2cycles(ch_cfg[channel]["times"][i]) + delay
                     length = prog.us2cycles(ch_cfg[channel]["lengths"][i])
 
-                    seq_params_list.append([time, 1, ch_index])
-                    seq_params_list.append([time+length, 0, ch_index])
+                    # Add beginning of DIG pulse
+                    if time in self.dig_seq:
+                        self.dig_seq[time].append((ch_index, True))
+                    else:
+                        self.dig_seq[time] = [(ch_index, True)]
 
-                [self.pmod_sequence_1.append(l) for l in seq_params_list]
-                self.pmod_sequence_1.sort(key=lambda x: x[0])
-                print(seq_params_list)
-                print(self.pmod_sequence_1)
+                    # Add end of DIG pulse
+                    if time+length in self.dig_seq:
+                        self.dig_seq[time+length].append((ch_index, False))
+                    else:
+                        self.dig_seq[time+length] = [(ch_index, False)]
 
+                # Not strictly necessary but makes inspecting assembly easier
+                self.dig_seq = dict(sorted(self.dig_seq.items()))
 
-        out = 0
-        for l in self.pmod_sequence_1:
-            # print(self.pmod_sequence)
-            # time = int(prog.us2cycles((l[0]) / 1e3))
-            time = l[0]
-            state = l[1]
-            bit_position = int(l[2])
+        # Program DIG after all channels have been configured
+        r_val = 0
+        rp, r_out = 0, 31 # tproc register page, tproc register
+        for time, states in self.dig_seq.items():
+            for l in states:
+                ch_index = l[0]
+                state = l[1]
 
-            if state == 1:
-                out |= (1 << bit_position)
-            elif state == 0:
-                out &= ~(1 << bit_position)
+                # Change DIG register to match desired state
+                if state == True:
+                    r_val |= (1 << ch_index)
+                elif state == False:
+                    r_val &= ~(1 << ch_index)
 
-            rp = 0 # tproc register page
-            r_out = 31 # tproc register
-            # print(bin(out), time)
-            prog.regwi(rp, r_out, out)
-            prog.seti(pmod, rp, r_out, time)
-        # print(len(self.pmod_sequence))
+            # Write register values
+            prog.regwi(rp, r_out, r_val)
+            prog.seti(dig_id, rp, r_out, time)
 
+        # Synchronise channels and loop
         prog.wait_all()
         prog.synci(prog.us2cycles(self.end_time))
         prog.loopnz(0, 14, "LOOP_I")
