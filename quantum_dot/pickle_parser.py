@@ -3,13 +3,10 @@ from qick import QickProgram
 
 valid_channels = ["DAC_A", "DAC_B", "PMOD_0", "PMOD_1", "PMOD_2", "PMOD_3"]
 
-# TODO: Make sure that you can't try to program the same channel multiple times
-
 class PickleParse():
 
-    sequence = [] # TODO: Remove
-
     def __init__(self, imported_seqs, ch_map=None):
+        self.pmod_sequence = [] # TODO: Remove!
         self.ch_cfg = {}
 
         # Allow sequences to be mapped to different channels
@@ -74,8 +71,8 @@ class PickleParse():
 
                 # Add channel sequence to master sequence and sort in order of 
                 # time
-                [self.sequence.append(l) for l in seq_params]
-                self.sequence.sort(key=lambda x: x[0])
+                [self.pmod_sequence.append(l) for l in seq_params]
+                self.pmod_sequence.sort(key=lambda x: x[0])
 
             # DAC parsing ------------------------------------------------------
 
@@ -99,9 +96,11 @@ class PickleParse():
                     time += l[0]
                 finish = time/1e3 # End time of sequence [us]
 
+                # --------------------------------------------------------------
+
             # Raise error if pulse parameter lists are not equal in length
             num_pulses = len(lengths)
-            if (len(times) != num_pulses or
+            if ((len(times) != num_pulses) or
                 ((ch_type == "DAC") and (len(freqs) != num_pulses))):
                 raise Exception("Number of elements in pulse parameter lists are not equal")
 
@@ -192,9 +191,8 @@ class PickleParse():
 
 
 
-        
         out = 0
-        for l in PickleParse.sequence:
+        for l in self.pmod_sequence:
             time = int(prog.us2cycles((l[0]) / 1e3))
             state = l[1]
             bit_position = int(l[2])
@@ -209,6 +207,7 @@ class PickleParse():
             # print(bin(out), time)
             prog.regwi(rp, r_out, out)
             prog.seti(pmod, rp, r_out, time)
+        print(len(self.pmod_sequence))
 
         prog.wait_all()
         prog.synci(prog.us2cycles(self.end_time))
