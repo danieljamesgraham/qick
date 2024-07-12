@@ -4,6 +4,7 @@ from qick import QickProgram
 valid_channels = ["DAC_A", "DAC_B", "DIG_0", "DIG_1", "DIG_2", "DIG_3"]
 
 # TODO: Default constants
+DEFAULT_DELAY = 0
 DEFAULT_GAIN = 10000
 
 class PickleParse():
@@ -20,20 +21,21 @@ class PickleParse():
         else:
             self.pulse_seqs = imported_seqs
 
+        # TODO: Move checks into separate function
+        self.check_delays(delays)
         # Check channel delay arguments are valid
-        for channel, delay in delays.items():
-            if channel not in valid_channels:
-                raise Exception(f"{channel} is not a valid channel. Try any from:\n{valid_channels}")
-            if type(delay) != int:
-                raise Exception(f"{channel} delay ({delay}) must be an integer number of clock cycles")
+
 
         # TODO: Gain and amplitude parameter checks (ie. int between 1 and 30000)
+        self.check_amplitudes(gains)
 
         for channel, seq_params in self.pulse_seqs.items():
             lengths, times = [], []
             
             # Check channel names are valid
-            # TODO: (?) Times, states, frequencies and phases must be floats or ints
+            # TODO: Times, amps, frequencies and phases must be floats or ints
+            # Max freq = 10GHz
+            # Max amp=1
             # TODO: Specify minimum pulse durations
             if channel not in valid_channels:
                 raise Exception(f"{channel} is not a valid channel. Try any from:\n{valid_channels}")
@@ -58,7 +60,7 @@ class PickleParse():
             if channel in delays: 
                 delay = delays[channel] # Trigger delay [proc. clock cycles]
             else:
-                delay = 0
+                delay = DEFAULT_DELAY
             
             if channel in gains:
                 gain = gains[channel]
@@ -206,3 +208,21 @@ class PickleParse():
         prog.synci(prog.us2cycles(self.end_time))
         prog.loopnz(0, 14, "LOOP_I")
         prog.end()
+
+    def check_channel(self, channel):
+        if channel not in valid_channels:
+            raise Exception(f"{channel} is not a valid channel. Try any from:\n{valid_channels}")
+    
+    def check_amplitudes(self, gains):
+        for channel, gain in gains.items():
+            self.check_channel(channel)
+            if not isinstance(gain, (int, float)):
+                raise Exception(f"{channel} gain '{gain}' must be an int or a float")
+            if abs(gain) > 30000:
+                raise Exception(f"{channel} gain magnitude '{gain}' must not be greater than 30000")
+
+    def check_delays(self, delays):
+        for channel, delay in delays.items():
+            self.check_channel(channel)
+            if type(delay) != int:
+                raise Exception(f"{channel} delay ({delay}) must be an integer number of clock cycles")
