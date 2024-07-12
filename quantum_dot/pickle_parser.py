@@ -19,6 +19,8 @@ class PickleParse():
 
         # Check channel is valid
         for channel, seq_params in self.pulse_seqs.items():
+            lengths, times = [], []
+
             if channel not in valid_channels:
                 raise Exception(channel, "Not a valid channel. Try any from:", 
                                 valid_channels)
@@ -27,76 +29,29 @@ class PickleParse():
             ch_type = channel.split('_')[0]
             ch_ref = channel.split('_')[1]
             
-            # PMOD parsing -----------------------------------------------------
             if ch_type == "PMOD":
                 print(f"----- PMOD {ch_ref} ------")
-                time = 0
-                lengths, times = [], []
-
-                ch_index = ch_ref
-
-                # Create lists of pulse parameters
-                time = 0
-                for l in seq_params:
-                    if int(l[1]) == 1:
-                        times.append(time/1e3) # Trigger time [us]
-                        lengths.append(int(l[0])/1e3) # Pulse durations [us]
-                    time += l[0]
-                finish = time/1e3 # End time of sequence [us]
-
-
-                # TODO: Move list creation outside of if condition
-
-
-
-                # Convert list of tuples into list of lists
-                seq_params = [list(t) for t in seq_params]
-
-                # Convert pulse widths into elapsed time and append channel to 
-                # list
-                running_time = 0
-                for l in seq_params:
-                    l[0], running_time = running_time, running_time + l[0]
-                    l.append(ch_index)
-                
-                delete_indices = []
-                for i in range(len(seq_params) - 1):
-                    if seq_params[i][1] == seq_params[i+1][1]:
-                        delete_indices.append(i+1)
-                for i in reversed(delete_indices):
-                    del seq_params[i]
-                
-                # End final pulse
-                seq_params.append([running_time, 0, ch_index])
-
-                # Add channel sequence to master sequence and sort in order of 
-                # time
-                [self.pmod_sequence.append(l) for l in seq_params]
-                self.pmod_sequence.sort(key=lambda x: x[0])
-
-            # DAC parsing ------------------------------------------------------
+                ch_index = int(ch_ref)
 
             if ch_type == "DAC":
                 print(f"----- DAC {ch_ref} -----")
-                time = 0
-                lengths, times, freqs = [], [], []
-
+                freqs = []
                 # Assign correct QICK channel index
                 if ch_ref == 'A':
                     ch_index = 1
                 elif ch_ref == 'B':
                     ch_index = 0
 
-                # Create lists of pulse parameters
-                for l in seq_params:
-                    if int(l[1]) == 1:
-                        times.append(time/1e3) # Trigger time [us]
-                        lengths.append(int(l[0])/1e3) # Pulse durations [us]
+            # Create lists of pulse parameters
+            time = 0
+            for l in seq_params:
+                if int(l[1]) == 1:
+                    times.append(time/1e3) # Trigger time [us]
+                    lengths.append(int(l[0])/1e3) # Pulse durations [us]
+                    if ch_type == "DAC":
                         freqs.append(l[2]*1e3) # DAC frequency [Hz]
-                    time += l[0]
-                finish = time/1e3 # End time of sequence [us]
-
-                # --------------------------------------------------------------
+                time += l[0]
+            finish = time/1e3 # End time of sequence [us]
 
             # Raise error if pulse parameter lists are not equal in length
             num_pulses = len(lengths)
@@ -110,12 +65,9 @@ class PickleParse():
                                     "num_pulses": num_pulses,
                                     "times": times,
                                     "lengths": lengths,
-                                    "finish": finish
+                                    "finish": finish,
+                                    **({"freqs": freqs} if ch_type == "DAC" else {})
                                     }
-
-            if ch_type == "DAC":
-                self.ch_cfg[channel]["freqs"] = freqs
-
             for key, value in self.ch_cfg[channel].items():
                 print(f"{key}: {value}")
 
@@ -155,6 +107,9 @@ class PickleParse():
         # TODO: move outside and make DAC parameter
         offset = 38
 
+        # TODO: Remove!
+        self.pmod_sequence_1 = []
+
         prog.synci(200)  # Give processor some time to configure pulses
 
         prog.regwi(0, 14, reps - 1) # 10 reps, stored in page 0, register 14
@@ -174,26 +129,36 @@ class PickleParse():
                     freq = prog.freq2reg(ch_cfg[channel]["freqs"][i], gen_ch=ch_index)
                     time = prog.us2cycles(ch_cfg[channel]["times"][i]) - offset
                     length = prog.us2cycles(ch_cfg[channel]["lengths"][i], gen_ch=ch_index)
+                    print(time + offset)
 
                     # Store pulse parameters in register, then trigger pulse at given time
                     prog.set_pulse_registers(ch=ch_index, freq=freq, style="const", length=length)
                     prog.pulse(ch=ch_index, t=time)
 
-            # if ch_cfg[channel]["ch_type"] == "PMOD":
+            if ch_cfg[channel]["ch_type"] == "PMOD":
 
+                ch_index = ch_cfg[channel]["ch_index"]
+                num_pulses = ch_cfg[channel]["num_pulses"]
 
+                seq_params_list = []
+                for i in range(num_pulses):
+                    time = prog.us2cycles(ch_cfg[channel]["times"][i])
+                    length = prog.us2cycles(ch_cfg[channel]["lengths"][i])
 
-            #     for i in range(num_pulses):
-            #         time = prog.us2cycles(ch_cfg[channel]["times"][i])
-            #         length = prog.us2cycles(ch_cfg[channel]["lengths"][i])
+                    seq_params_list.append([time, 1, ch_index])
+                    seq_params_list.append([time+length, 0, ch_index])
 
-
-
+                [self.pmod_sequence_1.append(l) for l in seq_params_list]
+                self.pmod_sequence_1.sort(key=lambda x: x[0])
+                print(seq_params_list)
+                print(self.pmod_sequence_1)
 
 
         out = 0
-        for l in self.pmod_sequence:
-            time = int(prog.us2cycles((l[0]) / 1e3))
+        for l in self.pmod_sequence_1:
+            # print(self.pmod_sequence)
+            # time = int(prog.us2cycles((l[0]) / 1e3))
+            time = l[0]
             state = l[1]
             bit_position = int(l[2])
 
@@ -207,7 +172,7 @@ class PickleParse():
             # print(bin(out), time)
             prog.regwi(rp, r_out, out)
             prog.seti(pmod, rp, r_out, time)
-        print(len(self.pmod_sequence))
+        # print(len(self.pmod_sequence))
 
         prog.wait_all()
         prog.synci(prog.us2cycles(self.end_time))
