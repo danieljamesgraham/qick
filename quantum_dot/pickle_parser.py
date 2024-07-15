@@ -6,7 +6,9 @@
 
 # TODO: Make sure not all parameters have to be specified for DAC
 # FIXME: Make sure to raise error if too many parameters specified for DIG
+# TODO: Finish check_params
 # TODO: Add check for DAC gain
+# TODO: Is check_lengths necessary?
 
 # TODO: Move __init__ functions
 
@@ -19,89 +21,51 @@ class PickleParse():
         self.ch_cfg = {}
         self.dig_seq = {}
 
-        # Allow sequences to be mapped to different channels
-        self.map_seqs(imported_seqs, ch_map)
-
-        # Check delay and pulse dictionaries are valid
-        self.check_delays(delays)
-        self.check_gains(gains)
+        self.map_seqs(imported_seqs, ch_map) # Map sequences to appropriate channels
+        self.check_delays(delays) # Check delay dictionary is valid
+        self.check_gains(gains) # Check gain dictionary is valid
 
         for ch, seq_params in self.pulse_seqs.items():
-            lengths, times = [], []
+            self.ch_cfg[ch] = {}
 
-            # Check channel name is valid
             self.check_ch(ch)
-
-            # Extract channel information
-            ch_type, ch_ref = ch.split('_')[0], ch.split('_')[1]
-            
+            ch_type = self.ch_cfg[ch]["ch_type"] = ch.split('_')[0]
+            ch_ref = ch.split('_')[1]
             if ch_type == "DIG":
                 print(f"----- DIG {ch_ref} ------")
-                ch_index = int(ch_ref)
-
-            if ch_type == "DAC":
+                self.ch_cfg[ch]["ch_index"] = int(ch_ref)
+            elif ch_type == "DAC":
                 print(f"----- DAC {ch_ref} -----")
-                amps, freqs, phases = [], [], []
+                self.ch_cfg[ch]["ch_index"] = {'A': 1, 'B': 0}.get(ch_ref)
 
-                # Assign correct QICK channel index
-                if ch_ref == 'A':
-                    ch_index = 1
-                elif ch_ref == 'B':
-                    ch_index = 0
-
-            if ch in delays: 
-                delay = delays[ch] # Trigger delay [proc. clock cycles]
-            else:
-                delay = DEFAULT_DELAY
+            self.ch_cfg[ch]["gain"] = gains.get(ch, DEFAULT_GAIN)
+            self.ch_cfg[ch]["delay"] = delays.get(ch, DEFAULT_DELAY)
             
-            if ch in gains:
-                gain = gains[ch]
-            else:
-                gain = DEFAULT_GAIN
-
             # Create lists of pulse parameters
+            self.ch_cfg[ch]["lengths"] = []
+            self.ch_cfg[ch]["times"] = []
+            if ch_type ==  "DAC":
+                self.ch_cfg[ch]["amps"] = []
+                self.ch_cfg[ch]["freqs"] = []
+                self.ch_cfg[ch]["phases"] = []
+
             time = 0
-            for l in seq_params:
-                # Add pulse parameters to respective lists
-                if (bool(l[1]) == False) and (len(l) > 2):
-                    raise Exception(f"Specified too many sequence parameters for pulse in channel {ch}")
-                elif bool(l[1]) == True:
-                    if ((len(l) > 2) and (ch_type == "DIG")
-                        or (len(l) > 4) and (ch_type == "DAC")):
-                        raise Exception(f"Specified too many sequence parameters for pulse in channel {ch}")
-
-                    times.append(time/1e3) # Trigger time [us]
-                    lengths.append(l[0]/1e3) # Pulse durations [us]
-
+            for params in seq_params:
+                self.check_params(ch, params)
+                if bool(params[1]) == True:
+                    self.ch_cfg[ch]["times"].append(time/1e3) # Trigger time [us]
+                    self.ch_cfg[ch]["lengths"].append(params[0]/1e3) # Pulse durations [us]
                     if ch_type == "DAC":
-                        amps.append(l[1])
-                        freqs.append(l[2]*1e3) # DAC frequency [Hz]
-                        phases.append(l[3]) # DAC phase [deg]
+                        self.ch_cfg[ch]["amps"].append(params[1])
+                        self.ch_cfg[ch]["freqs"].append(params[2]*1e3) # DAC frequency [Hz]
+                        self.ch_cfg[ch]["phases"].append(params[3]) # DAC phase [deg]
+                time += params[0]
 
-                time += l[0]
-            duration = time/1e3 # End time of sequence [us]
+            self.ch_cfg[ch]["num_pulses"] = len(self.ch_cfg[ch]["lengths"])
+            self.ch_cfg[ch]["duration"] = time/1e3 # End time of sequence [us]
 
+            self.check_lengths(ch)
 
-            # Raise error if pulse parameter lists are not equal in length
-            num_pulses = len(lengths)
-            if ((len(times) != num_pulses) or
-                ((ch_type == "DAC") and (len(freqs) != num_pulses))):
-                raise Exception("Number of elements in pulse parameter lists are not equal")
-
-            # Create and print dictionary containing pulse parameters
-            self.ch_cfg[ch] = {"ch_type": ch_type,
-                                    "ch_index": ch_index,
-                                    "num_pulses": num_pulses,
-                                    "duration": duration,
-                                    "delay": delay,
-                                    "gain": gain,
-                                    "times": times,
-                                    "lengths": lengths,
-                                    **({"amps": amps,
-                                        "freqs": freqs,
-                                        "phases": phases}
-                                       if ch_type == "DAC" else {})
-                                    }
             for key, value in self.ch_cfg[ch].items():
                 print(f"{key}: {value}")
 
@@ -144,7 +108,27 @@ class PickleParse():
 
             if not isinstance(delay, int):
                 raise TypeError(f"{ch} delay '{delay}' not integer number of clock cycles")
-            
+
+
+
+    def check_params(self, ch, params):
+        # Add pulse parameters to respective lists
+        if (bool(params[1]) == False) and (len(params) > 2):
+            raise Exception(f"Specified too many sequence parameters for pulse in channel {ch}")
+        elif bool(params[1]) == True:
+            if ((len(params) > 2) and (self.ch_cfg[ch]["ch_type"] == "DIG")
+                or (len(params) > 4) and (self.ch_cfg[ch]["ch_type"] == "DAC")):
+                raise Exception(f"Specified too many sequence parameters for pulse in channel {ch}")
+
+
+
+    def check_lengths(self, ch):
+        times = self.ch_cfg[ch]["times"]
+        num_pulses = self.ch_cfg[ch]["num_pulses"]
+        if ((len(times) != num_pulses) or
+            ((self.ch_cfg[ch]["ch_type"] == "DAC") and (len(self.ch_cfg[ch]["freqs"]) != num_pulses))):
+            raise Exception("Number of elements in pulse parameter lists are not equal")
+
 
 
     def get_end_time(self):
