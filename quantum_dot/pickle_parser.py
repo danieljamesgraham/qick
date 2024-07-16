@@ -18,6 +18,9 @@ DEFAULT_GAIN = 10000
 class PickleParse():
 
     def __init__(self, imported_seqs, ch_map=None, gains={}, delays={}):
+        # ```
+
+        # ```
         self.ch_cfg = {}
         self.dig_seq = {}
 
@@ -142,7 +145,7 @@ class PickleParse():
 
 
 
-    def generate_asm(self, prog, reps=1):
+    def generate_asm(self, prog, sync, reps=1):
         ch_cfg = self.ch_cfg
 
         prog.synci(200)  # Give processor some time to configure pulses
@@ -151,7 +154,7 @@ class PickleParse():
 
         for ch in ch_cfg:
             if ch_cfg[ch]["ch_type"] == "DAC":
-                self.gen_dac_asm(prog, ch)
+                self.gen_dac_asm(prog, ch, sync)
             elif ch_cfg[ch]["ch_type"] == "DIG":
                 self.gen_dig_seq(prog, ch)
 
@@ -165,7 +168,7 @@ class PickleParse():
 
 
 
-    def gen_dac_asm(self, prog, ch):
+    def gen_dac_asm(self, prog, ch, sync):
         ch_cfg = self.ch_cfg
         ch_index = ch_cfg[ch]["ch_index"]
 
@@ -177,7 +180,7 @@ class PickleParse():
             length = prog.us2cycles(ch_cfg[ch]["lengths"][i], gen_ch=ch_index)
             amp = int(ch_cfg[ch]["amps"][i] * ch_cfg[ch]["gain"])
             freq = prog.freq2reg(ch_cfg[ch]["freqs"][i], gen_ch=ch_index)
-            phase = prog.deg2reg(ch_cfg[ch]["phases"][i], gen_ch=ch_index)
+            phase = prog.deg2reg(sync[ch_cfg[ch]["freqs"][i]][ch_index] + ch_cfg[ch]["phases"][i], gen_ch=ch_index)
 
             # Store DAC parameters in register and trigger pulse
             prog.set_pulse_registers(ch=ch_index, gain=amp, freq=freq, phase=phase,
