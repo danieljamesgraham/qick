@@ -1,16 +1,4 @@
-# TODO: Default constants
-# TODO: Times, amps, frequencies and phases must be floats or ints
-# Max freq = 10GHz
-# Max amp=1
-# TODO: Specify minimum pulse durations
-
-# TODO: Make sure not all parameters have to be specified for DAC
-# FIXME: Make sure to raise error if too many parameters specified for DIG
-# TODO: Finish check_params
-# TODO: Add check for DAC gain
-# TODO: Is check_lengths necessary?
-
-# TODO: Move __init__ functions
+# TODO: Convert all user-input parameters into specific data-type
 
 DEFAULT_DELAY = 0
 DEFAULT_GAIN = 10000
@@ -20,7 +8,7 @@ class PickleParse():
     def __init__(self, imported_seqs, ch_map=None, gains={}, delays={}):
         """
         Constructor method.
-        Creates and prints dicionary containg all specified pulse sequence 
+        Creates and prints dictionary containing all specified pulse sequence 
         parameters for each channel.
         """
         self.ch_cfg = {}
@@ -33,7 +21,7 @@ class PickleParse():
         for ch, seq_params in self.pulse_seqs.items():
             self.ch_cfg[ch] = {}
 
-            self.check_ch(ch)
+            self.check_ch(ch) # Check channel string is valid
             ch_type = self.ch_cfg[ch]["ch_type"] = ch.split('_')[0]
             ch_ref = ch.split('_')[1]
             if ch_type == "DIG":
@@ -43,6 +31,7 @@ class PickleParse():
                 print(f"----- DAC {ch_ref} -----")
                 self.ch_cfg[ch]["ch_index"] = {'A': 1, 'B': 0}.get(ch_ref)
 
+            # Assign specified or default gains and delays for channel
             self.ch_cfg[ch]["gain"] = gains.get(ch, DEFAULT_GAIN)
             self.ch_cfg[ch]["delay"] = delays.get(ch, DEFAULT_DELAY)
             
@@ -61,15 +50,15 @@ class PickleParse():
                     self.ch_cfg[ch]["times"].append(time/1e3) # Trigger time [us]
                     self.ch_cfg[ch]["lengths"].append(params[0]/1e3) # Pulse durations [us]
                     if ch_type == "DAC":
-                        self.ch_cfg[ch]["amps"].append(params[1])
+                        self.ch_cfg[ch]["amps"].append(params[1]) # DAC amplitude
                         self.ch_cfg[ch]["freqs"].append(params[2]*1e3) # DAC frequency [Hz]
                         self.ch_cfg[ch]["phases"].append(params[3]) # DAC phase [deg]
                 time += params[0]
 
-            self.ch_cfg[ch]["num_pulses"] = len(self.ch_cfg[ch]["lengths"])
+            self.ch_cfg[ch]["num_pulses"] = len(self.ch_cfg[ch]["lengths"]) # Number of pulses
             self.ch_cfg[ch]["duration"] = time/1e3 # End time of sequence [us]
 
-            self.check_lengths(ch)
+            self.check_lengths(ch) # Check that lengths of pulse parameter lists match
 
             for key, value in self.ch_cfg[ch].items():
                 print(f"{key}: {value}")
@@ -121,8 +110,18 @@ class PickleParse():
 
     def check_params(self, ch, params):
         """
-        Check if 
+        Check if the correct number of parameters have been specified for each 
+        pulse in array.
         """
+
+        # TODO: Times, amps, frequencies and phases must be floats or ints
+        # TODO: Make sure to raise error if too many parameters specified for DIG
+        # TODO: times : float/int, +ve
+        # TODO: lengths: float/int, [Currently in us but need to veryify that it is greater than 3 clock cycles]
+        # TODO: amps : float/int, 0 < amp < 1
+        # TODO: freqs : float/int, 0 < freq < 10 [GHz]
+        # TODO: phases : float/int
+
         if (bool(params[1]) == False) and (len(params) > 2):
             raise Exception(f"Specified too many sequence parameters for pulse in channel {ch}")
         elif bool(params[1]) == True:
@@ -131,6 +130,12 @@ class PickleParse():
                 raise Exception(f"Specified too many sequence parameters for pulse in channel {ch}")
 
     def check_lengths(self, ch):
+        """
+        Check pulse parameter lists are equal in length.
+        """
+
+        # TODO: include lengths, times, amps, freqs, phases in check
+
         times = self.ch_cfg[ch]["times"]
         num_pulses = self.ch_cfg[ch]["num_pulses"]
         if ((len(times) != num_pulses) or
@@ -138,6 +143,12 @@ class PickleParse():
             raise Exception("Number of elements in pulse parameter lists are not equal")
 
     def get_end_time(self):
+        """
+        Find time at which longest sequence ends and assign corresponding class
+        variable 'end_time'.
+
+        end_time : float
+        """
         # Find and print time at which longest sequence ends
         end_times = [self.ch_cfg[ch]["duration"] for ch in self.ch_cfg]
         self.end_time = max(end_times)
@@ -147,6 +158,10 @@ class PickleParse():
             print("WARNING! Not all sequences are of the same duration")
 
     def generate_asm(self, prog, delta_phis, reps=1):
+        """
+        Generate tproc assembly that produces appropriately timed pulses 
+        according to parameters specified in parsed lists.
+        """
         ch_cfg = self.ch_cfg
 
         prog.synci(200)  # Give processor some time to configure pulses
@@ -161,17 +176,20 @@ class PickleParse():
 
         self.gen_dig_asm(prog)
 
-        # Synchronise channels and loop
-        prog.wait_all()
-        prog.synci(prog.us2cycles(self.end_time))
-        prog.loopnz(0, 14, "LOOP_I")
+        # TODO: Are wait_all() and synci() both strictly necessary?
+        prog.wait_all() # Pause tproc until all channels finished sequences
+        prog.synci(prog.us2cycles(self.end_time)) # Sync all channels when last channel finished sequence
+        prog.loopnz(0, 14, "LOOP_I") # End of internal loop
         prog.end()
 
     def gen_dac_asm(self, prog, ch, delta_phis):
+        """
+        DAC specific assembly instructions for use in generate_asm()
+        """
         ch_cfg = self.ch_cfg
         ch_index = ch_cfg[ch]["ch_index"]
 
-        prog.declare_gen(ch=ch_index, nqz=1) 
+        prog.declare_gen(ch=ch_index, nqz=1) # Initialise DAC channel
 
         for i in range(ch_cfg[ch]["num_pulses"]):
             # DAC pulse parameters
@@ -182,12 +200,22 @@ class PickleParse():
             phase = prog.deg2reg(delta_phis[ch_cfg[ch]["freqs"][i]][ch_index] 
                                  + ch_cfg[ch]["phases"][i], gen_ch=ch_index)
 
-            # Store DAC parameters in register and trigger pulse
+            # Program DAC channel with parameters and then play pulse
             prog.set_pulse_registers(ch=ch_index, gain=amp, freq=freq, phase=phase,
                                      style="const", length=length)
             prog.pulse(ch=ch_index, t=time)
 
     def gen_dig_seq(self, prog, ch):
+        """
+        Create class dict 'dig_seq' containing all digital pulse parameters.
+
+        dig_seq : dict
+            key == time : int
+                Time of event occurrence [clock cycles]
+            val == states : list
+                List of tuples in form
+                [('digital channel index' : int, 'logic state' : bool), ...]
+        """
         ch_cfg = self.ch_cfg
         ch_index = ch_cfg[ch]["ch_index"]
 
@@ -212,6 +240,9 @@ class PickleParse():
         self.dig_seq = dict(sorted(self.dig_seq.items()))
 
     def gen_dig_asm(self, prog):
+        """
+        Digital output specific assembly instructions for use in generate_asm()
+        """
         soccfg = prog.soccfg
 
         # Program DIG after all channels have been configured
@@ -224,12 +255,11 @@ class PickleParse():
                 ch_index = l[0]
                 state = l[1]
 
-                # Change DIG register to match desired state
+                # Set appropriate bits in register to reflect desired output state
                 if state == True:
                     r_val |= (1 << ch_index)
                 elif state == False:
                     r_val &= ~(1 << ch_index)
 
-            # Write register values
-            prog.regwi(rp, r_out, r_val)
-            prog.seti(dig_id, rp, r_out, time)
+            prog.regwi(rp, r_out, r_val) # Write to register
+            prog.seti(dig_id, rp, r_out, time) # Assign digital output
